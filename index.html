@@ -27,6 +27,7 @@ button.sec{background:#eef0f3;color:#4b5563;flex:0 0 auto;padding-left:18px;padd
 button:active{opacity:.85}
 button:disabled{opacity:.45}
 .empty{text-align:center;padding:44px 10px;color:#6b7280;font-size:14px;line-height:2}
+.hint{font-size:12px;color:#6b7280;line-height:1.7;margin-top:10px}
 .empty .big{font-size:30px;display:block;margin-bottom:8px}
 .list{display:grid;gap:10px}
 .list a{display:flex;justify-content:space-between;align-items:center;text-decoration:none;
@@ -62,10 +63,20 @@ button:disabled{opacity:.45}
   var DEV = localStorage.getItem('cb_dev');
   if (!DEV) { DEV = 'd' + Math.random().toString(36).slice(2, 10); localStorage.setItem('cb_dev', DEV); }
 
-  var DATA = null, KEY = '', POOL = [], USED = {}, CUR = '';
+  var DATA = null, KEY = '', POOL = [], USED = {}, CUR = '', S0 = 0, OFF = 0;
 
   function h(s) { var x = 0, i; for (i = 0; i < s.length; i++) { x = ((x << 5) - x + s.charCodeAt(i)) | 0; } return Math.abs(x); }
   function id(t) { return String(h(t)); }
+  // 按设备号确定性分散：起点 = h(设备号) % 池大小，取条时顺序往后找第一个未用的。
+  // 比纯随机好——不同手机天然落在池子不同位置，撞车概率大幅降低（原来是 1/N 每次刷新都重掷）。
+  function pickIndex() {
+    var n = POOL.length, k, i;
+    for (k = 0; k < n; k++) {
+      i = (S0 + OFF + k) % n;
+      if (!USED[id(POOL[i])]) { OFF += k + 1; return i; }
+    }
+    return -1;
+  }
   function toast(m) { var e = document.getElementById('toast'); e.textContent = m; e.className = 'toast on'; setTimeout(function () { e.className = 'toast'; }, 1700); }
   function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
   function saveUsed() { try { localStorage.setItem('cb_used_' + KEY, JSON.stringify(Object.keys(USED))); } catch (e) {} }
@@ -98,22 +109,23 @@ button:disabled{opacity:.45}
       box.innerHTML = '<div class="empty"><span class="big">✅</span>本机已经把 ' + POOL.length + ' 条全取完了<br>' +
         '<button class="sec" style="margin-top:14px;padding:10px 18px" id="rs">重置本机记录</button></div>';
       document.getElementById('rs').onclick = function () {
-        USED = {}; saveUsed(); CUR = ''; pick(); toast('已重置本机记录');
+        USED = {}; saveUsed(); CUR = ''; OFF = 0; pick(); toast('已重置本机记录');
       };
       return;
     }
-    if (!CUR || USED[id(CUR)]) { CUR = rem[h(DEV + Date.now()) % rem.length]; }
+    if (!CUR || USED[id(CUR)]) { var i0 = pickIndex(); CUR = i0 < 0 ? '' : POOL[i0]; }
     box.innerHTML =
       '<textarea id="ta" readonly>' + esc(CUR) + '</textarea>' +
-      '<div class="btns"><button id="cp">复制这条</button><button class="sec" id="sk">换一条</button></div>';
+      '<div class="btns"><button id="cp">复制这条</button><button class="sec" id="sk">换一条</button></div>' +
+      '<p class="hint">💡 取过的那条只记在本机，不会从备份池里删除（原站会删）。所以换一台设备可能拿到同一条。</p>';
     document.getElementById('cp').onclick = doCopy;
     document.getElementById('sk').onclick = function () { CUR = ''; pick(); };
   }
 
   function pick() {
-    var rem = remaining();
-    if (!rem.length) { CUR = ''; render(); return; }
-    CUR = rem[h(DEV + Date.now() + Math.floor(Math.random() * 1e6)) % rem.length];
+    var i = pickIndex();
+    if (i < 0) { CUR = ''; render(); return; }
+    CUR = POOL[i];
     render();
   }
 
@@ -163,6 +175,8 @@ button:disabled{opacity:.45}
     POOL = (DATA.pools[KEY] || []).slice();
     USED = {};
     loadUsed().forEach(function (k) { USED[k] = 1; });
+    S0 = POOL.length ? h(DEV) % POOL.length : 0;
+    OFF = 0;
     document.getElementById('acct').textContent = ACCT + (KEY !== ACCT ? ' · ' + KEY + '池' : '');
     document.getElementById('acct').className = 'acct';
     pick();
