@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
-<title>评论备份站</title>
+<title>评论取用站</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
@@ -16,6 +16,9 @@ h1{font-size:17px;font-weight:600}
 .acct.warn{background:#c2410c}
 .rows{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
 .chip{font-size:12px;color:#4b5563;background:#fff;border:1px solid #e5e7eb;padding:4px 10px;border-radius:999px}
+.chip.ok{color:#046c3f;border-color:#bbf7d0;background:#f0fdf4}
+.chip.busy{color:#92400e;border-color:#fde68a;background:#fffbeb}
+.chip.err{color:#b91c1c;border-color:#fecaca;background:#fef2f2}
 .card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:16px}
 textarea{width:100%;min-height:168px;padding:14px;border:1px solid #e5e7eb;border-radius:10px;
      font-size:15px;line-height:1.75;resize:vertical;background:#fbfbfc;color:#1f2328;
@@ -27,8 +30,8 @@ button.sec{background:#eef0f3;color:#4b5563;flex:0 0 auto;padding-left:18px;padd
 button:active{opacity:.85}
 button:disabled{opacity:.45}
 .empty{text-align:center;padding:44px 10px;color:#6b7280;font-size:14px;line-height:2}
-.hint{font-size:12px;color:#6b7280;line-height:1.7;margin-top:10px}
 .empty .big{font-size:30px;display:block;margin-bottom:8px}
+.hint{font-size:12px;color:#6b7280;line-height:1.7;margin-top:10px}
 .list{display:grid;gap:10px}
 .list a{display:flex;justify-content:space-between;align-items:center;text-decoration:none;
      background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px 16px;color:#1f2328;font-size:15px}
@@ -38,150 +41,245 @@ button:disabled{opacity:.45}
 .toast{position:fixed;left:50%;bottom:38px;transform:translate(-50%,26px);opacity:0;transition:.26s;
      background:#111827;color:#fff;font-size:14px;padding:11px 20px;border-radius:999px;z-index:9;pointer-events:none;max-width:86vw;text-align:center}
 .toast.on{opacity:1;transform:translate(-50%,0)}
+.toast.warn{background:#b45309}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="top">
-    <h1>评论备份站</h1>
+    <h1>评论取用站</h1>
     <span class="acct" id="acct">—</span>
   </div>
   <div class="rows">
     <span class="chip" id="cnt">剩余 — 条</span>
-    <span class="chip" id="used">本机已取 0</span>
     <span class="chip" id="synced">—</span>
+    <span class="chip" id="net">—</span>
   </div>
   <div class="card" id="card"><div class="empty"><span class="big">⏳</span>加载中…</div></div>
   <div class="foot" id="foot"></div>
 </div>
 <div class="toast" id="toast"></div>
 
+<script src="config.js"></script>
 <script>
 (function () {
+  var CONF = window.CB_CONF || {};
+  var OWNER = CONF.owner || 'Jiesener';
+  var REPO  = CONF.repo  || 'comment-backup';
+  var BRANCH= CONF.branch|| 'main';
+  var TOKEN = CONF.token || '';
+  var API   = 'https://api.github.com/repos/' + OWNER + '/' + REPO + '/contents/data.json';
+  var HDR = { 'Authorization': 'Bearer ' + TOKEN, 'Accept': 'application/vnd.github+json' };
+  var HDRJ = { 'Authorization': 'Bearer ' + TOKEN, 'Accept': 'application/vnd.github+json',
+               'Content-Type': 'application/json' };
+
   var q = new URLSearchParams(location.search);
   var ACCT = (q.get('u') || '').trim();
-  var DEV = localStorage.getItem('cb_dev');
-  if (!DEV) { DEV = 'd' + Math.random().toString(36).slice(2, 10); localStorage.setItem('cb_dev', DEV); }
-
-  var DATA = null, KEY = '', POOL = [], USED = {}, CUR = '', S0 = 0, OFF = 0;
+  var DATA = null, SHA = '', KEY = '', POOL = [], CUR = '', BUSY = false, OFF = 0;
 
   function h(s) { var x = 0, i; for (i = 0; i < s.length; i++) { x = ((x << 5) - x + s.charCodeAt(i)) | 0; } return Math.abs(x); }
-  function id(t) { return String(h(t)); }
-  // 按设备号确定性分散：起点 = h(设备号) % 池大小，取条时顺序往后找第一个未用的。
-  // 比纯随机好——不同手机天然落在池子不同位置，撞车概率大幅降低（原来是 1/N 每次刷新都重掷）。
-  function pickIndex() {
-    var n = POOL.length, k, i;
-    for (k = 0; k < n; k++) {
-      i = (S0 + OFF + k) % n;
-      if (!USED[id(POOL[i])]) { OFF += k + 1; return i; }
-    }
-    return -1;
-  }
-  function toast(m) { var e = document.getElementById('toast'); e.textContent = m; e.className = 'toast on'; setTimeout(function () { e.className = 'toast'; }, 1700); }
   function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
-  function saveUsed() { try { localStorage.setItem('cb_used_' + KEY, JSON.stringify(Object.keys(USED))); } catch (e) {} }
-  function loadUsed() { try { return JSON.parse(localStorage.getItem('cb_used_' + KEY) || '[]'); } catch (e) { return []; } }
-  function remaining() { return POOL.filter(function (t) { return !USED[id(t)]; }); }
+  function toast(m, warn) { var e = document.getElementById('toast'); e.textContent = m; e.className = 'toast on' + (warn ? ' warn' : ''); clearTimeout(e._t); e._t = setTimeout(function () { e.className = 'toast'; }, 2600); }
+  function chip(id, txt, cls) { var e = document.getElementById(id); e.textContent = txt; e.className = 'chip' + (cls ? ' ' + cls : ''); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  // —— base64 <-> UTF-8（浏览器 btoa 不能直接处理中文） ——
+  function b64enc(str) {
+    var b = new TextEncoder().encode(str), s = '';
+    for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+    return btoa(s);
+  }
+  function b64dec(b64) {
+    var bin = atob(String(b64).replace(/\s/g, ''));
+    var u = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return new TextDecoder('utf-8').decode(u);
+  }
+  function nowStr() {
+    var d = new Date(), p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+           p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  // —— 读云端（走 api.github.com，避开 Pages 的 CDN 缓存） ——
+  function load() {
+    chip('net', '同步中…', 'busy');
+    // 不加自定义缓存头（会被 GitHub CORS 拦），用 URL 参数绕缓存
+    return fetch(API + '?ref=' + BRANCH + '&_=' + Date.now(), { headers: HDR, cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ' ' + t.slice(0, 120)); });
+        return r.json();
+      })
+      .then(function (j) {
+        DATA = JSON.parse(b64dec(j.content));
+        SHA = j.sha;
+        chip('net', '已连接', 'ok');
+        return DATA;
+      })
+      .catch(function (e) {
+        chip('net', '连不上云端', 'err');
+        throw e;
+      });
+  }
+
+  // —— 写云端：把已取走的那条从池里删掉（永久） ——
+  function put(next, sha) {
+    return fetch(API, {
+      method: 'PUT', headers: HDRJ, cache: 'no-store',
+      body: JSON.stringify({
+        message: 'take: ' + KEY + ' 取走 1 条（剩余 ' + next.pools[KEY].length + '）',
+        content: b64enc(JSON.stringify(next, null, 1)),
+        sha: sha, branch: BRANCH
+      })
+    });
+  }
+
+  // —— 核心：取走一条（带 SHA 乐观锁 + 冲突重试） ——
+  function take(text, attempt) {
+    attempt = attempt || 0;
+    var idx = (DATA.pools[KEY] || []).indexOf(text);
+    if (idx < 0) { return Promise.resolve('gone'); }          // 已被别人取走
+    var next = JSON.parse(JSON.stringify(DATA));
+    next.pools[KEY].splice(idx, 1);
+    next.updated = nowStr();
+    return put(next, SHA).then(function (r) {
+      if (r.ok) {
+        return r.json().then(function (j) {
+          DATA = next; SHA = j.content.sha;
+          return 'ok';
+        });
+      }
+      if ((r.status === 409 || r.status === 422) && attempt < 4) {
+        return sleep(160 + Math.random() * 320).then(function () {   // 退避后重拉最新
+          return load().then(function () {
+            if ((DATA.pools[KEY] || []).indexOf(text) < 0) { return 'gone'; }
+            return take(text, attempt + 1);
+          });
+        });
+      }
+      return 'err:' + r.status;
+    });
+  }
+
+  // —— 选条：按设备分散起点 + 会话内顺序推进 ——
+  function pick() {
+    var n = POOL.length;
+    if (!n) { CUR = ''; render(); return; }
+    CUR = POOL[(h(DEV) % n + OFF) % n];
+    render();
+  }
+  var DEV = (function () {
+    var d = localStorage.getItem('cb_dev');
+    if (!d) { d = 'd' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); localStorage.setItem('cb_dev', d); }
+    return d;
+  })();
 
   function renderAccounts() {
     var a = DATA.accounts || {}, ks = Object.keys(a).sort(), html = '';
     if (!ks.length) { ks = Object.keys(DATA.pools || {}).sort(); a = {}; }
     ks.forEach(function (k) {
       var n = ((DATA.pools || {})[a[k] || k] || []).length;
-      html += '<a href="?u=' + encodeURIComponent(k) + '"><b>?u=' + esc(k) + '</b><span>' + n + ' 条</span></a>';
+      html += '<a href="?u=' + encodeURIComponent(k) + '"><b>?u=' + esc(k) + '</b><span>剩 ' + n + ' 条</span></a>';
     });
     document.getElementById('acct').textContent = '未指定账号';
     document.getElementById('acct').className = 'acct warn';
-    document.getElementById('cnt').textContent = '可用账号 ' + ks.length + ' 个';
-    document.getElementById('used').style.display = 'none';
+    chip('cnt', '可用账号 ' + ks.length + ' 个');
     document.getElementById('card').innerHTML = '<div class="list">' + html + '</div>';
   }
 
   function render() {
-    var rem = remaining(), usedN = Object.keys(USED).length;
-    document.getElementById('cnt').textContent = '剩余 ' + rem.length + ' 条';
-    document.getElementById('used').textContent = '本机已取 ' + usedN;
     var box = document.getElementById('card');
+    chip('cnt', '剩余 ' + POOL.length + ' 条');
     if (!POOL.length) {
-      box.innerHTML = '<div class="empty"><span class="big">📭</span>这个池是空的</div>'; return;
-    }
-    if (usedN >= POOL.length) {
-      box.innerHTML = '<div class="empty"><span class="big">✅</span>本机已经把 ' + POOL.length + ' 条全取完了<br>' +
-        '<button class="sec" style="margin-top:14px;padding:10px 18px" id="rs">重置本机记录</button></div>';
-      document.getElementById('rs').onclick = function () {
-        USED = {}; saveUsed(); CUR = ''; OFF = 0; pick(); toast('已重置本机记录');
-      };
+      box.innerHTML = '<div class="empty"><span class="big">📭</span>这个池已经取完了<br><small>需要补货时从 NAS 重新导出导入</small></div>';
       return;
     }
-    if (!CUR || USED[id(CUR)]) { var i0 = pickIndex(); CUR = i0 < 0 ? '' : POOL[i0]; }
     box.innerHTML =
       '<textarea id="ta" readonly>' + esc(CUR) + '</textarea>' +
-      '<div class="btns"><button id="cp">复制这条</button><button class="sec" id="sk">换一条</button></div>' +
-      '<p class="hint">💡 取过的那条只记在本机，不会从备份池里删除（原站会删）。所以换一台设备可能拿到同一条。</p>';
+      '<div class="btns"><button id="cp">复制并取走</button><button class="sec" id="sk">换一条</button></div>' +
+      '<p class="hint">⚠️ 点「复制并取走」后，这条会<b>从云端池里永久删除</b>，其他设备不会再看到它。</p>' +
+      '<p class="hint">「换一条」只是本机换个看，不会占用也不会消耗。</p>';
     document.getElementById('cp').onclick = doCopy;
-    document.getElementById('sk').onclick = function () { CUR = ''; pick(); };
-  }
-
-  function pick() {
-    var i = pickIndex();
-    if (i < 0) { CUR = ''; render(); return; }
-    CUR = POOL[i];
-    render();
+    document.getElementById('sk').onclick = function () { OFF++; pick(); };
   }
 
   function doCopy() {
-    if (!CUR) { return; }
+    if (BUSY || !CUR) return;
+    BUSY = true;
     var t = CUR, btn = document.getElementById('cp');
-    if (btn) { btn.disabled = true; }
-    function done() {
-      USED[id(t)] = 1; saveUsed();
-      toast('已复制 · 本机不再重复给这条');
-      CUR = ''; pick();
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(t).then(done, function () {
-        var ta = document.getElementById('ta'); ta.select(); ta.setSelectionRange(0, 99999);
-        var ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
-        if (ok) { done(); } else { toast('复制失败，请长按手动复制'); if (btn) { btn.disabled = false; } }
+    if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+    var copied = false;
+
+    function afterCopy() {
+      take(t).then(function (res) {
+        BUSY = false;
+        if (res === 'ok') {
+          toast('已复制，并从云端池取走');
+          POOL = DATA.pools[KEY] || [];
+          CUR = ''; pick();
+        } else if (res === 'gone') {
+          toast('这条刚被别人取走了，已自动换一条', true);
+          load().then(function () { POOL = DATA.pools[KEY] || []; CUR = ''; pick(); })
+            .catch(function () { CUR = ''; pick(); });
+        } else {
+          if (btn) { btn.disabled = false; btn.textContent = '复制并取走'; }
+          toast('已复制，但云端同步失败（' + res + '），请再点一次', true);
+        }
+      }).catch(function (e) {
+        BUSY = false;
+        if (btn) { btn.disabled = false; btn.textContent = '复制并取走'; }
+        toast('云端同步失败：' + e.message, true);
       });
-    } else {
-      var ta = document.getElementById('ta'); ta.select(); ta.setSelectionRange(0, 99999);
-      var ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
-      if (ok) { done(); } else { toast('复制失败，请长按手动复制'); if (btn) { btn.disabled = false; } }
     }
+
+    function fallbackCopy() {
+      var ta = document.getElementById('ta');
+      ta.select(); ta.setSelectionRange(0, 99999);
+      var ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
+      if (ok) { afterCopy(); } else {
+        BUSY = false;
+        if (btn) { btn.disabled = false; btn.textContent = '复制并取走'; }
+        toast('复制失败，请长按文本框手动复制', true);
+      }
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function () { afterCopy(); }, fallbackCopy);
+    } else { fallbackCopy(); }
   }
 
-  fetch('data.json?t=' + Date.now(), { cache: 'no-store' }).then(function (r) {
-    if (!r.ok) { throw new Error('HTTP ' + r.status); } return r.json();
-  }).then(function (d) {
-    DATA = d;
-    if (!DATA.pools) { throw new Error('数据格式不对'); }
-    var set = document.getElementById('synced');
-    set.textContent = '数据 ' + (DATA.updated || '?').slice(5, 16);
+  if (!TOKEN) {
+    chip('net', '未配置 token', 'err');
+    document.getElementById('card').innerHTML =
+      '<div class="empty err"><span class="big">⚠️</span>缺少 config.js（运行时要用的仓库 token）<br>' +
+      '<small>把 config.js 和 index.html 一起放上去即可</small></div>';
+    return;
+  }
+
+  load().then(function () {
+    chip('synced', '数据 ' + (DATA.updated || '?').slice(5, 16));
     document.getElementById('foot').innerHTML =
-      '只读备份 · 数据源 ' + esc(DATA.source || 'NAS') + '<br>' +
-      '本页不写入任何数据，取了哪条只记在本机浏览器里';
+      '共享云端池 · ' + esc(OWNER + '/' + REPO) + '<br>' +
+      '复制即从池中永久取走，多设备不会拿到同一条';
     if (!ACCT) { renderAccounts(); return; }
     if (!(ACCT in (DATA.accounts || {})) && !(ACCT in DATA.pools)) {
       document.getElementById('acct').textContent = ACCT;
       document.getElementById('acct').className = 'acct warn';
-      document.getElementById('cnt').textContent = '账号不存在';
-      document.getElementById('used').style.display = 'none';
+      chip('cnt', '账号不存在');
       document.getElementById('card').innerHTML = '<div class="empty"><span class="big">⚠️</span>没有这个账号：' + esc(ACCT) +
         '<br><button class="sec" style="margin-top:14px;padding:10px 18px" onclick="location.search=\'\'">看可用账号</button></div>';
       return;
     }
     KEY = (DATA.accounts || {})[ACCT] || ACCT;
     POOL = (DATA.pools[KEY] || []).slice();
-    USED = {};
-    loadUsed().forEach(function (k) { USED[k] = 1; });
-    S0 = POOL.length ? h(DEV) % POOL.length : 0;
-    OFF = 0;
     document.getElementById('acct').textContent = ACCT + (KEY !== ACCT ? ' · ' + KEY + '池' : '');
     document.getElementById('acct').className = 'acct';
     pick();
   }).catch(function (e) {
-    document.getElementById('card').innerHTML = '<div class="empty err"><span class="big">⚠️</span>数据加载失败<br><small>' + esc(e.message) + '</small></div>';
+    document.getElementById('card').innerHTML = '<div class="empty err"><span class="big">⚠️</span>云端数据加载失败<br><small>' + esc(e.message) + '</small>' +
+      '<br><button class="sec" style="margin-top:14px;padding:10px 18px" id="rt">重试</button></div>';
+    var b = document.getElementById('rt');
+    if (b) b.onclick = function () { location.reload(); };
   });
 })();
 </script>
